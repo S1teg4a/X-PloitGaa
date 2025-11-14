@@ -1,5 +1,5 @@
 --== Load Rayfield ==--
-local Rayfield = loadstring(game:HttpGet('https://sirius.menu/rayfield'))()
+local Rayfield = loadstring(game:HttpGet('https://raw.githubusercontent.com/S1teg4a/X-PloitGaa/refs/heads/main/lua/Xploitgaa-v1.lua'))()
 
 --== Create Window ==--
 local Window = Rayfield:CreateWindow({
