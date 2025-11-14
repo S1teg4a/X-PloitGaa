@@ -3,68 +3,99 @@ local Rayfield = loadstring(game:HttpGet('https://sirius.menu/rayfield'))()
 
 --== Create Window ==--
 local Window = Rayfield:CreateWindow({
-    Name = "Universal Hub (Mobile + PC)",
+    Name = "Mountain Hub (Mobile + PC)",
     Icon = 0,
-    LoadingTitle = "Loading UI...",
+    LoadingTitle = "Loading Mountain Hub...",
     LoadingSubtitle = "Mobile + PC Ready",
     Theme = "Default",
 
-    -- PC Keybind
-    ToggleUIKeybind = "RightShift", 
-
-    -- Penting banget untuk MOBILE
-    ShowText = "Open Menu",
+    ToggleUIKeybind = "RightShift",
+    ShowText = "Mountain Menu",
 
     ConfigurationSaving = {
         Enabled = true,
-        FileName = "UniversalHub"
+        FileName = "MountainHub"
     }
 })
 
---== Create Tabs ==--
-local MainTab = Window:CreateTab("Main", 4483362458)
-local PlayerTab = Window:CreateTab("Player", 4483362458)
+--== Tabs ==--
+local Main = Window:CreateTab("Main", 4483362458)
+local Player = Window:CreateTab("Player", 4483362458)
+local Teleport = Window:CreateTab("Teleport", 4483362458)
 
---== MAIN: Button ==--
-MainTab:CreateButton({
-    Name = "Print Test",
-    Callback = function()
-        print("Button ditekan!")
-    end,
+--== Main: Anti-Fall ==--
+Main:CreateToggle({
+	Name = "Anti Fall (Anti Slip)",
+	CurrentValue = false,
+	Flag = "AntiFall",
+	Callback = function(v)
+		local char = game.Players.LocalPlayer.Character
+		if v then
+			char.HumanoidRootPart.CustomPhysicalProperties = PhysicalProperties.new(1, 0.3, 0.5)
+		else
+			char.HumanoidRootPart.CustomPhysicalProperties = PhysicalProperties.new(1, 0.3, 0.3)
+		end
+	end,
 })
 
---== MAIN: Toggle ==--
-MainTab:CreateToggle({
-    Name = "Toggle Contoh",
+--== Main: Auto Climb ==--
+Main:CreateToggle({
+    Name = "Auto Climb (Boost Vertical)",
     CurrentValue = false,
-    Flag = "ExampleToggle",
+    Flag = "AutoClimb",
     Callback = function(v)
-        print("Toggle:", v)
+        getgenv().autoClimb = v
+        while autoClimb do
+            task.wait()
+            local h = game.Players.LocalPlayer.Character:FindFirstChild("HumanoidRootPart")
+            if h then
+                h.Velocity = Vector3.new(h.Velocity.X, 50, h.Velocity.Z)
+            end
+        end
     end,
 })
 
---== PLAYER: Slider ==--
-PlayerTab:CreateSlider({
+--== Player: WalkSpeed ==--
+Player:CreateSlider({
     Name = "WalkSpeed",
-    Range = {16, 200},
+    Range = {16, 150},
     Increment = 1,
     Suffix = "Speed",
     CurrentValue = 16,
-    Flag = "SpeedSlider",
-    Callback = function(value)
-        game.Players.LocalPlayer.Character.Humanoid.WalkSpeed = value
+    Flag = "WalkSpeed",
+    Callback = function(v)
+        game.Players.LocalPlayer.Character.Humanoid.WalkSpeed = v
     end,
 })
 
---== PLAYER: Slider Jump ==--
-PlayerTab:CreateSlider({
+--== Player: JumpPower ==--
+Player:CreateSlider({
     Name = "JumpPower",
     Range = {50, 300},
     Increment = 5,
     Suffix = "Power",
     CurrentValue = 50,
-    Flag = "JumpSlider",
-    Callback = function(value)
-        game.Players.LocalPlayer.Character.Humanoid.JumpPower = value
+    Flag = "JumpPower",
+    Callback = function(v)
+        game.Players.LocalPlayer.Character.Humanoid.JumpPower = v
     end,
 })
+
+--== Teleport: Locations ==--
+local locations = {
+    ["Basecamp"] = Vector3.new(0, 10, 0),
+    ["Pos 1"] = Vector3.new(100, 50, -30),
+    ["Pos 2"] = Vector3.new(200, 130, -60),
+    ["Cliff Edge"] = Vector3.new(300, 200, -120),
+    ["Peak / Summit"] = Vector3.new(380, 300, -180)
+}
+
+for name, pos in pairs(locations) do
+    Teleport:CreateButton({
+        Name = "Teleport ke "..name,
+        Callback = function()
+            local hrp = game.Players.LocalPlayer.Character:WaitForChild("HumanoidRootPart")
+            hrp.CFrame = CFrame.new(pos)
+        end,
+    })
+end
