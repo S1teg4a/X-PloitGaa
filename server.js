@@ -1,202 +1,183 @@
-// server.js — combined HTTP key-server + Discord admin bot
-// usage: set env BOT_TOKEN, OWNER_ID, API_SECRET, PORT (optional)
+ini hanya untuk notepad saja
+
+// server.js
+// Simple key server + discord bot
+// Endpoints:
+//  GET /           -> alive page
+//  POST /validate  -> { key } with header X-API-SECRET
+//  POST /admin/generate/free  -> { uses } (X-API-SECRET)
+//  POST /admin/generate/life  -> (X-API-SECRET)
+//  POST /admin/delete         -> { key } (X-API-SECRET)
+//  GET  /admin/list           -> (X-API-SECRET)
 
 const fs = require("fs");
-const path = "./keys.json";
+const path = require("path");
 const express = require("express");
 const bodyParser = require("body-parser");
-const rateLimit = require("express-rate-limit"); // lightweight limiter (optional)
 const { Client, GatewayIntentBits } = require("discord.js");
 
-// --- helper to load/save keys.json ---
+const PORT = process.env.PORT || 3000;
+const API_SECRET = process.env.API_SECRET || "change_me";
+const BOT_TOKEN = process.env.BOT_TOKEN || "";
+const OWNER_ID = process.env.OWNER_ID || ""; // optional
+
+const KEYS_FILE = path.resolve(__dirname, "keys.json");
+
+// load or init keys file
 function loadKeys() {
   try {
-    const raw = fs.readFileSync(path, "utf8");
+    const raw = fs.readFileSync(KEYS_FILE, "utf8");
     return JSON.parse(raw);
   } catch (e) {
     const init = { free: {}, lifetime: {} };
-    fs.writeFileSync(path, JSON.stringify(init, null, 2));
+    fs.writeFileSync(KEYS_FILE, JSON.stringify(init, null, 2), "utf8");
     return init;
   }
 }
-function saveKeys(keys) {
-  fs.writeFileSync(path, JSON.stringify(keys, null, 2));
+function saveKeys(k) {
+  fs.writeFileSync(KEYS_FILE, JSON.stringify(k, null, 2), "utf8");
+}
+let keys = loadKeys();
+
+// helper generator
+function genKey(prefix = "KEY") {
+  return `${prefix}-${Math.random().toString(36).slice(2,10).toUpperCase()}`;
 }
 
-// --- config from env ---
-const BOT_TOKEN = process.env.BOT_TOKEN || "";
-const OWNER_ID = process.env.OWNER_ID || ""; // Discord user id of owner
-const API_SECRET = process.env.API_SECRET || "replace_me_secret";
-const PORT = parseInt(process.env.PORT || process.env.VERCEL_PORT || 3000, 10);
-
-// --- express app ---
+// Express app
 const app = express();
 app.use(bodyParser.json());
 
-// Basic in-memory rate limiter per IP (to avoid abuse on /validate)
-const ipCounts = {};
-const RATE_WINDOW_MS = 60 * 1000; // 1 minute
-const RATE_MAX = 20; // per minute
+// root
+app.get("/", (req, res) => {
+  res.setHeader("Content-Type","text/plain");
+  res.send("XPG Key Server (alive). POST /validate with X-API-SECRET header.");
+});
 
-function tooManyRequests(ip) {
-  const now = Date.now();
-  if (!ipCounts[ip]) ipCounts[ip] = { t: now, c: 1 };
-  else {
-    if (now - ipCounts[ip].t > RATE_WINDOW_MS) {
-      ipCounts[ip].t = now; ipCounts[ip].c = 1;
-    } else {
-      ipCounts[ip].c += 1;
-    }
+// validate endpoint
+app.post("/validate", (req, res) => {
+  const secret = req.header("X-API-SECRET");
+  if (!secret || secret !== API_SECRET) {
+    // We still allow requests without secret? No — require secret for server API calls from clients.
+    return res.status(401).json({ success:false, reason:"bad-secret" });
   }
-  return ipCounts[ip].c > RATE_MAX;
+  const key = (req.body && req.body.key) ? String(req.body.key).trim() : "";
+  if (!key) return res.status(400).json({ success:false, reason:"empty-key" });
+
+  // lifetime check
+  if (keys.lifetime && keys.lifetime[key]) {
+    return res.json({ success: true, type: "vvip", consumed: false, source: "server" });
+  }
+  // free check
+  if (keys.free && keys.free[key] && Number(keys.free[key]) > 0) {
+    // decrement uses
+    keys.free[key] = Math.max(0, Number(keys.free[key]) - 1);
+    saveKeys(keys);
+    return res.json({ success: true, type: "free", consumed: true, uses_left: keys.free[key], source: "server" });
+  }
+
+  return res.json({ success: false, reason: "invalid-key" });
+});
+
+// admin endpoints (protected by same API_SECRET)
+function requireSecret(req, res, next) {
+  const secret = req.header("X-API-SECRET");
+  if (!secret || secret !== API_SECRET) {
+    return res.status(401).json({ success:false, reason:"bad-secret" });
+  }
+  return next();
 }
 
-// Health endpoint
-app.get("/", (req, res) => {
-  res.json({ ok: true, message: "XPG key server running" });
+app.get("/admin/list", requireSecret, (req,res) => {
+  return res.json({ success:true, keys });
 });
 
-// Validate endpoint (POST { key })
-app.post("/validate", (req, res) => {
-  try {
-    const secret = req.header("X-API-SECRET") || "";
-    if (secret !== API_SECRET) return res.status(401).json({ success:false, reason:"bad-secret" });
-
-    const ip = req.ip || req.connection.remoteAddress || "unknown";
-    if (tooManyRequests(ip)) return res.status(429).json({ success:false, reason:"rate-limit" });
-
-    const key = (req.body && req.body.key) ? String(req.body.key).trim() : "";
-    if (!key) return res.status(400).json({ success:false, reason:"empty-key" });
-
-    const keys = loadKeys();
-
-    // lifetime check
-    if (keys.lifetime && keys.lifetime[key]) {
-      return res.json({ success:true, type:"vvip", consumed:false, uses_left:null });
-    }
-    // free check
-    if (keys.free && typeof keys.free[key] === "number") {
-      const uses = keys.free[key];
-      if (uses <= 0) {
-        return res.json({ success:false, reason:"no-uses-left" });
-      }
-      // decrement and save
-      keys.free[key] = Math.max(0, uses - 1);
-      saveKeys(keys);
-      return res.json({ success:true, type:"free", consumed:true, uses_left: keys.free[key] });
-    }
-    // not found
-    return res.json({ success:false, reason:"invalid-key" });
-  } catch (err) {
-    console.error("validate err:", err);
-    return res.status(500).json({ success:false, reason:"server-error" });
-  }
-});
-
-// Admin endpoints (optional protection via BOT owner secret)
-app.post("/admin/generate/free", (req, res) => {
-  const secret = req.header("X-API-SECRET") || "";
-  if (secret !== API_SECRET) return res.status(401).json({ success:false, reason:"bad-secret" });
-  const uses = parseInt(req.body.uses || 3, 10) || 3;
-  const key = `FREE-${Math.random().toString(36).slice(2,10).toUpperCase()}`;
-  const keys = loadKeys();
+app.post("/admin/generate/free", requireSecret, (req,res) => {
+  const uses = parseInt((req.body && req.body.uses) || 3, 10) || 3;
+  const key = genKey("FREE");
   keys.free[key] = uses;
   saveKeys(keys);
-  res.json({ success:true, key, uses });
+  return res.json({ success:true, key, uses });
 });
-app.post("/admin/generate/life", (req, res) => {
-  const secret = req.header("X-API-SECRET") || "";
-  if (secret !== API_SECRET) return res.status(401).json({ success:false, reason:"bad-secret" });
-  const key = `VVIP-${Math.random().toString(36).slice(2,10).toUpperCase()}`;
-  const keys = loadKeys();
+
+app.post("/admin/generate/life", requireSecret, (req,res) => {
+  const key = genKey("VVIP");
   keys.lifetime[key] = true;
   saveKeys(keys);
-  res.json({ success:true, key });
+  return res.json({ success:true, key });
 });
 
-// start HTTP server
-const server = app.listen(PORT, () => {
-  console.log(`Key server listening on port ${PORT}`);
-  console.log(`API_SECRET: ${API_SECRET ? "SET" : "NOT-SET"}`);
+app.post("/admin/delete", requireSecret, (req,res) => {
+  const key = (req.body && req.body.key) ? String(req.body.key).trim() : "";
+  if (!key) return res.status(400).json({ success:false, reason:"empty-key" });
+  let removed = false;
+  if (keys.free[key]) { delete keys.free[key]; removed = true; }
+  if (keys.lifetime[key]) { delete keys.lifetime[key]; removed = true; }
+  if (removed) { saveKeys(keys); return res.json({ success:true, removed:key }); }
+  return res.json({ success:false, reason:"not-found" });
 });
 
-// ---- Discord bot section ----
-if (!BOT_TOKEN) {
-  console.log("BOT_TOKEN not provided — Discord commands disabled.");
-} else {
-  const client = new Client({
-    intents: [GatewayIntentBits.Guilds, GatewayIntentBits.GuildMessages, GatewayIntentBits.MessageContent, GatewayIntentBits.DirectMessages],
-    partials: ["CHANNEL"]
-  });
+// Start express server after optionally init bot
+async function startServer() {
+  // If BOT_TOKEN present, start bot
+  if (BOT_TOKEN) {
+    try {
+      const client = new Client({ intents: [GatewayIntentBits.Guilds, GatewayIntentBits.GuildMessages, GatewayIntentBits.MessageContent] });
+      client.once("ready", () => {
+        console.log("Discord bot ready:", client.user && client.user.tag);
+      });
+      client.on("messageCreate", async (msg) => {
+        if (msg.author.bot) return;
+        const content = (msg.content || "").trim();
+        if (OWNER_ID && msg.author.id !== OWNER_ID) return; // only owner
+        if (!content) return;
+        if (content.startsWith("!gen free")) {
+          const parts = content.split(/\s+/);
+          const uses = parseInt(parts[2]) || 3;
+          const newKey = genKey("FREE");
+          keys.free[newKey] = uses;
+          saveKeys(keys);
+          msg.reply(`✅ Free key created: \`${newKey}\` (uses: ${uses})`);
+        } else if (content.startsWith("!gen life") || content.startsWith("!gen vvip")) {
+          const newKey = genKey("VVIP");
+          keys.lifetime[newKey] = true;
+          saveKeys(keys);
+          msg.reply(`💎 Lifetime key created: \`${newKey}\``);
+        } else if (content.startsWith("!del ")) {
+          const parts = content.split(/\s+/);
+          const k = parts[1];
+          if (!k) return msg.reply("Usage: !del <KEY>");
+          let removed = false;
+          if (keys.free[k]) { delete keys.free[k]; removed = true; }
+          if (keys.lifetime[k]) { delete keys.lifetime[k]; removed = true; }
+          saveKeys(keys);
+          return msg.reply(removed ? `🗑 Key removed: \`${k}\`` : `Key not found: \`${k}\``);
+        } else if (content === "!listkeys") {
+          const f = Object.entries(keys.free).map(([k,v])=>`${k} (free:${v})`).slice(0,30);
+          const l = Object.keys(keys.lifetime).slice(0,30).map(k=>`${k} (vvip)`);
+          const out = ["Free:", ...f, "Lifetime:", ...l].join("\n") || "none";
+          // chunk reply
+          for (let i=0;i<Math.ceil(out.length/1900);i++){
+            const chunk = out.slice(i*1900, (i+1)*1900);
+            await msg.channel.send("```\n"+chunk+"\n```");
+          }
+        }
+      });
 
-  client.on("ready", () => {
-    console.log("Discord bot ready:", client.user && client.user.tag);
-  });
-
-  function genKey(prefix="KEY") {
-    return `${prefix}-${Math.random().toString(36).slice(2,10).toUpperCase()}`;
+      await client.login(BOT_TOKEN).catch(e => {
+        console.error("Discord login failed:", e && e.message ? e.message : e);
+      });
+    } catch (err) {
+      console.error("Bot startup error:", err);
+    }
+  } else {
+    console.log("BOT_TOKEN not set — Discord bot disabled.");
   }
 
-  client.on("messageCreate", async (msg) => {
-    try {
-      if (!msg || !msg.content) return;
-      if (msg.author.bot) return;
-      const content = msg.content.trim();
-      // allow only owner
-      if (!OWNER_ID || String(msg.author.id) !== String(OWNER_ID)) return;
-
-      // !gen free [uses]
-      if (content.startsWith("!gen free")) {
-        const parts = content.split(/\s+/);
-        const uses = parseInt(parts[2], 10) || 3;
-        const keys = loadKeys();
-        const key = genKey("FREE");
-        keys.free[key] = uses;
-        saveKeys(keys);
-        return msg.reply(`✅ Free key created: \`${key}\` (uses: ${uses})`);
-      }
-
-      if (content.startsWith("!gen life") || content.startsWith("!gen vvip")) {
-        const keys = loadKeys();
-        const key = genKey("VVIP");
-        keys.lifetime[key] = true;
-        saveKeys(keys);
-        return msg.reply(`💎 Lifetime key created: \`${key}\``);
-      }
-
-      if (content.startsWith("!del ")) {
-        const parts = content.split(/\s+/);
-        const key = parts[1];
-        const keys = loadKeys();
-        let removed = false;
-        if (keys.free && keys.free[key] !== undefined) { delete keys.free[key]; removed = true; }
-        if (keys.lifetime && keys.lifetime[key]) { delete keys.lifetime[key]; removed = true; }
-        saveKeys(keys);
-        return msg.reply(removed ? `🗑 Key removed: \`${key}\`` : `Key not found: \`${key}\``);
-      }
-
-      if (content === "!listkeys") {
-        const keys = loadKeys();
-        const freeEntries = Object.entries(keys.free || {});
-        const lifetimeEntries = Object.keys(keys.lifetime || {});
-        let out = "Free keys:\n";
-        freeEntries.slice(0,50).forEach(([k,v]) => out += `${k} (uses:${v})\n`);
-        out += "\nLifetime keys:\n";
-        lifetimeEntries.slice(0,50).forEach(k => out += `${k}\n`);
-        // split if too long
-        const chunks = [];
-        while (out.length) {
-          chunks.push(out.slice(0,1900));
-          out = out.slice(1900);
-        }
-        for (const c of chunks) await msg.channel.send("```" + c + "```");
-        return;
-      }
-
-    } catch (err) {
-      console.error("bot message error:", err);
-    }
+  app.listen(PORT, () => {
+    console.log(`Key server running on port ${PORT}`);
+    console.log(`Validate endpoint: POST http://<host>:${PORT}/validate with header X-API-SECRET: ${API_SECRET}`);
   });
-
-  client.login(BOT_TOKEN).catch(e => console.error("Discord login failed:", e.message));
 }
+
+startServer().catch(e => console.error(e));
