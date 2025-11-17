@@ -12,7 +12,16 @@ const fs = require("fs");
 const path = require("path");
 const express = require("express");
 const bodyParser = require("body-parser");
-const { Client, GatewayIntentBits } = require("discord.js");
+const {
+  Client,
+  GatewayIntentBits,
+  ActionRowBuilder,
+  ButtonBuilder,
+  ButtonStyle,
+  ModalBuilder,
+  TextInputBuilder,
+  TextInputStyle
+} = require("discord.js");
 
 const PORT = process.env.PORT || 3000;
 const API_SECRET = process.env.API_SECRET || "change_me";
@@ -120,44 +129,161 @@ async function startServer() {
   // If BOT_TOKEN present, start bot
   if (BOT_TOKEN) {
     try {
-      const client = new Client({ intents: [GatewayIntentBits.Guilds, GatewayIntentBits.GuildMessages, GatewayIntentBits.MessageContent] });
+      const client = new Client({
+        intents: [
+          GatewayIntentBits.Guilds,
+          GatewayIntentBits.GuildMessages,
+          GatewayIntentBits.MessageContent
+        ]
+      });
+
       client.once("ready", () => {
         console.log("Discord bot ready:", client.user && client.user.tag);
       });
+
+      /**
+       * MESSAGE-BASED TRIGGER
+       * - Owner sends: !panel
+       * - Bot will send a message containing a panel of buttons:
+       *    [Generate Free] [Generate Lifetime] [Delete Key] [List Keys]
+       *
+       * - Generate Free / Delete Key open a modal for input (uses / key)
+       * - Buttons and modals are owner-only (checked by OWNER_ID). Non-owner presses will receive ephemeral denial.
+       *
+       * NOTE: This replaces the previous text commands with a button panel as requested.
+       */
+
       client.on("messageCreate", async (msg) => {
         if (msg.author.bot) return;
         const content = (msg.content || "").trim();
-        if (OWNER_ID && msg.author.id !== OWNER_ID) return; // only owner
+        if (OWNER_ID && msg.author.id !== OWNER_ID) return; // only owner can use bot panel
         if (!content) return;
-        if (content.startsWith("!gen free")) {
-          const parts = content.split(/\s+/);
-          const uses = parseInt(parts[2]) || 3;
-          const newKey = genKey("FREE");
-          keys.free[newKey] = uses;
-          saveKeys(keys);
-          msg.reply(`✅ Free key created: \`${newKey}\` (uses: ${uses})`);
-        } else if (content.startsWith("!gen life") || content.startsWith("!gen vvip")) {
-          const newKey = genKey("VVIP");
-          keys.lifetime[newKey] = true;
-          saveKeys(keys);
-          msg.reply(`💎 Lifetime key created: \`${newKey}\``);
-        } else if (content.startsWith("!del ")) {
-          const parts = content.split(/\s+/);
-          const k = parts[1];
-          if (!k) return msg.reply("Usage: !del <KEY>");
-          let removed = false;
-          if (keys.free[k]) { delete keys.free[k]; removed = true; }
-          if (keys.lifetime[k]) { delete keys.lifetime[k]; removed = true; }
-          saveKeys(keys);
-          return msg.reply(removed ? `🗑 Key removed: \`${k}\`` : `Key not found: \`${k}\``);
-        } else if (content === "!listkeys") {
-          const f = Object.entries(keys.free).map(([k,v])=>`${k} (free:${v})`).slice(0,30);
-          const l = Object.keys(keys.lifetime).slice(0,30).map(k=>`${k} (vvip)`);
-          const out = ["Free:", ...f, "Lifetime:", ...l].join("\n") || "none";
-          // chunk reply
-          for (let i=0;i<Math.ceil(out.length/1900);i++){
-            const chunk = out.slice(i*1900, (i+1)*1900);
-            await msg.channel.send("```\n"+chunk+"\n```");
+
+        // send panel when owner types !panel
+        if (content === "!panel") {
+          const row = new ActionRowBuilder().addComponents(
+            new ButtonBuilder()
+              .setCustomId("gen_free")
+              .setLabel("Generate Free")
+              .setStyle(ButtonStyle.Primary),
+            new ButtonBuilder()
+              .setCustomId("gen_life")
+              .setLabel("Generate Lifetime")
+              .setStyle(ButtonStyle.Success),
+            new ButtonBuilder()
+              .setCustomId("del_key")
+              .setLabel("Delete Key")
+              .setStyle(ButtonStyle.Danger),
+            new ButtonBuilder()
+              .setCustomId("list_keys")
+              .setLabel("List Keys")
+              .setStyle(ButtonStyle.Secondary)
+          );
+
+          await msg.channel.send({
+            content: "Panel Tombol — pilih aksi:",
+            components: [row]
+          });
+        }
+      });
+
+      // Interaction handler for buttons and modals
+      client.on("interactionCreate", async (interaction) => {
+        try {
+          // Button interactions
+          if (interaction.isButton && interaction.isButton()) {
+            // owner-only guard
+            if (OWNER_ID && interaction.user.id !== OWNER_ID) {
+              return interaction.reply({ content: "❌ Kamu bukan owner — akses ditolak.", ephemeral: true });
+            }
+
+            const id = interaction.customId;
+            if (id === "gen_free") {
+              // show modal to ask for uses
+              const modal = new ModalBuilder()
+                .setCustomId("modal_gen_free")
+                .setTitle("Generate Free Key");
+
+              const usesInput = new TextInputBuilder()
+                .setCustomId("uses")
+                .setLabel("Jumlah uses (kosong = 3)")
+                .setStyle(TextInputStyle.Short)
+                .setRequired(false)
+                .setPlaceholder("3");
+
+              const firstRow = new ActionRowBuilder().addComponents(usesInput);
+              modal.addComponents(firstRow);
+
+              await interaction.showModal(modal);
+            } else if (id === "gen_life") {
+              // create lifetime key immediately
+              const newKey = genKey("VVIP");
+              keys.lifetime[newKey] = true;
+              saveKeys(keys);
+              await interaction.reply({ content: `💎 Lifetime key created: \`${newKey}\``, ephemeral: true });
+            } else if (id === "del_key") {
+              // show modal to ask for key to delete
+              const modal = new ModalBuilder()
+                .setCustomId("modal_del_key")
+                .setTitle("Delete Key");
+
+              const keyInput = new TextInputBuilder()
+                .setCustomId("delkey")
+                .setLabel("Key yang ingin dihapus")
+                .setStyle(TextInputStyle.Short)
+                .setRequired(true)
+                .setPlaceholder("e.g. FREE-ABC12345");
+
+              modal.addComponents(new ActionRowBuilder().addComponents(keyInput));
+              await interaction.showModal(modal);
+            } else if (id === "list_keys") {
+              // prepare list (limited to safe length)
+              const f = Object.entries(keys.free).map(([k,v])=>`${k} (free:${v})`).slice(0,50);
+              const l = Object.keys(keys.lifetime).slice(0,50).map(k=>`${k} (vvip)`);
+              const out = ["Free:", ...f, "Lifetime:", ...l].join("\n");
+              const safeOut = out.length > 1900 ? out.slice(0,1900) + "\n\n…(truncated)" : out || "none";
+              await interaction.reply({ content: "🔑 Keys:\n```\n" + safeOut + "\n```", ephemeral: true });
+            } else {
+              await interaction.reply({ content: "Unknown button.", ephemeral: true });
+            }
+            return;
+          }
+
+          // Modal submit handling
+          if (interaction.isModalSubmit && interaction.isModalSubmit()) {
+            // owner-only guard
+            if (OWNER_ID && interaction.user.id !== OWNER_ID) {
+              return interaction.reply({ content: "❌ Kamu bukan owner — akses ditolak.", ephemeral: true });
+            }
+
+            const id = interaction.customId;
+            if (id === "modal_gen_free") {
+              const usesVal = interaction.fields.getTextInputValue("uses") || "";
+              let uses = parseInt(usesVal, 10);
+              if (isNaN(uses) || uses <= 0) uses = 3;
+              const newKey = genKey("FREE");
+              keys.free[newKey] = uses;
+              saveKeys(keys);
+              await interaction.reply({ content: `✅ Free key created: \`${newKey}\` (uses: ${uses})`, ephemeral: true });
+            } else if (id === "modal_del_key") {
+              const keyToDel = interaction.fields.getTextInputValue("delkey") || "";
+              const k = String(keyToDel).trim();
+              if (!k) return interaction.reply({ content: "❌ Key kosong.", ephemeral: true });
+              let removed = false;
+              if (keys.free[k]) { delete keys.free[k]; removed = true; }
+              if (keys.lifetime[k]) { delete keys.lifetime[k]; removed = true; }
+              if (removed) { saveKeys(keys); return interaction.reply({ content: `🗑 Key removed: \`${k}\``, ephemeral: true }); }
+              return interaction.reply({ content: `Key not found: \`${k}\``, ephemeral: true });
+            }
+          }
+        } catch (err) {
+          console.error("Interaction handler error:", err);
+          try {
+            if (interaction && interaction.replied === false && interaction.deferred === false) {
+              await interaction.reply({ content: "⚠️ Terjadi kesalahan saat memproses aksi.", ephemeral: true });
+            }
+          } catch (e) {
+            // ignore
           }
         }
       });
