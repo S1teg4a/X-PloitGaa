@@ -1,5 +1,3 @@
-ini hanya untuk notepad saja
-
 // server.js
 // Simple key server + discord bot
 // Endpoints:
